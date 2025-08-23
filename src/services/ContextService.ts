@@ -15,7 +15,7 @@ export class ContextService {
   private client: AxiosInstance
   private contextManagerUrl: string
 
-  constructor(contextManagerUrl: string = 'http://localhost:3002') {
+  constructor(contextManagerUrl: string = 'http://localhost:3005') {
     this.contextManagerUrl = contextManagerUrl
     this.client = axios.create({
       baseURL: contextManagerUrl,
@@ -42,59 +42,51 @@ export class ContextService {
         headers.Authorization = `Bearer ${jwtToken}`
       }
 
-      // Get secret context for this workspace/user
-      const response = await this.client.get(
-        `/api/v1/context/secret/${workspaceId}/${userId}`,
-        { headers }
-      )
-
-      const secretContext = response.data
-
-      // Extract provider-specific credentials
+      // Get individual credentials for this provider
       const credentials: ContextManagerCredentials = {}
 
       switch (provider) {
         case 'digitalocean':
-          credentials.digitalocean_api_token = this.extractCredential(
-            secretContext,
-            'digitalocean_api_token'
+          credentials.digitalocean_api_token = await this.getCredential(
+            'digitalocean_api_token',
+            headers
           )
           break
         
         case 'aws':
-          credentials.aws_access_key_id = this.extractCredential(
-            secretContext,
-            'aws_access_key_id'
+          credentials.aws_access_key_id = await this.getCredential(
+            'aws_access_key_id',
+            headers
           )
-          credentials.aws_secret_access_key = this.extractCredential(
-            secretContext,
-            'aws_secret_access_key'
+          credentials.aws_secret_access_key = await this.getCredential(
+            'aws_secret_access_key',
+            headers
           )
           break
           
         case 'gcp':
-          credentials.gcp_service_account_key = this.extractCredential(
-            secretContext,
-            'gcp_service_account_key'
+          credentials.gcp_service_account_key = await this.getCredential(
+            'gcp_service_account_key',
+            headers
           )
           break
           
         case 'azure':
-          credentials.azure_subscription_id = this.extractCredential(
-            secretContext,
-            'azure_subscription_id'
+          credentials.azure_subscription_id = await this.getCredential(
+            'azure_subscription_id',
+            headers
           )
-          credentials.azure_client_id = this.extractCredential(
-            secretContext,
-            'azure_client_id'
+          credentials.azure_client_id = await this.getCredential(
+            'azure_client_id',
+            headers
           )
-          credentials.azure_client_secret = this.extractCredential(
-            secretContext,
-            'azure_client_secret'
+          credentials.azure_client_secret = await this.getCredential(
+            'azure_client_secret',
+            headers
           )
-          credentials.azure_tenant_id = this.extractCredential(
-            secretContext,
-            'azure_tenant_id'
+          credentials.azure_tenant_id = await this.getCredential(
+            'azure_tenant_id',
+            headers
           )
           break
       }
@@ -124,12 +116,12 @@ export class ContextService {
         headers.Authorization = `Bearer ${jwtToken}`
       }
 
-      // Store each credential separately for security
+      // Store each credential separately using the correct endpoint
       const credentialEntries = this.flattenCredentials(provider, credentials)
 
       for (const [key, value] of credentialEntries) {
         await this.client.post(
-          `/api/v1/context/secret/${workspaceId}/${userId}/credential`,
+          `/api/v1/context/secret/credential`,
           {
             key,
             value,
@@ -162,14 +154,16 @@ export class ContextService {
         headers.Authorization = `Bearer ${jwtToken}`
       }
 
+      // Get list of SSH keys from Context Manager
       const response = await this.client.get(
-        `/api/v1/context/secret/${workspaceId}/${userId}/ssh-keys`,
+        `/api/v1/context/secret/list`,
         { headers }
       )
 
-      const sshKeys = response.data.ssh_keys || []
+      const secretList = response.data.secrets || []
       
-      // Extract public key fingerprints for cloud providers
+      // Filter for SSH keys and extract fingerprints
+      const sshKeys = secretList.filter((secret: any) => secret.type === 'ssh_key')
       return sshKeys.map((key: any) => key.fingerprint).filter(Boolean)
     } catch (error) {
       console.warn('Failed to get SSH keys from Context Manager:', error)
@@ -196,7 +190,7 @@ export class ContextService {
       }
 
       await this.client.post(
-        `/api/v1/context/secret/${workspaceId}/${userId}/ssh-key`,
+        `/api/v1/context/secret/ssh-key`,
         {
           key_name: keyName,
           private_key: privateKey,
@@ -232,7 +226,7 @@ export class ContextService {
       }
 
       const response = await this.client.get(
-        `/api/v1/context/user/${workspaceId}/${userId}/preferences`,
+        `/api/v1/context/user`,
         { headers }
       )
 
@@ -275,7 +269,7 @@ export class ContextService {
       }
 
       await this.client.put(
-        `/api/v1/context/user/${workspaceId}/${userId}/preferences`,
+        `/api/v1/context/user/preferences`,
         preferences,
         { headers }
       )
@@ -312,7 +306,7 @@ export class ContextService {
       }
 
       await this.client.post(
-        `/api/v1/context/user/${workspaceId}/${userId}/infrastructure-event`,
+        `/api/v1/context/user/infrastructure-event`,
         event,
         { headers }
       )
@@ -337,17 +331,55 @@ export class ContextService {
   }
 
   // Private helper methods
-  private extractCredential(secretContext: any, key: string): string | undefined {
-    const credentials = secretContext.credentials || {}
-    const credential = credentials[key]
-    
-    if (credential && typeof credential === 'object' && credential.encrypted_data) {
-      // In a real implementation, you would decrypt this
-      // For now, assume it's already decrypted by the Context Manager API
-      return credential.value || credential.encrypted_data
+  private async getCredential(key: string, headers: any): Promise<string | undefined> {
+    try {
+      // Debug JWT token
+      console.log(`[ContextService] Requesting credential '${key}'`)
+      if (headers.Authorization) {
+        const token = headers.Authorization.replace('Bearer ', '')
+        console.log(`[ContextService] Using JWT token: ${token.substring(0, 50)}...`)
+        
+        // Decode and check expiration
+        try {
+          const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString())
+          const now = Math.floor(Date.now() / 1000)
+          const expiresIn = payload.exp - now
+          console.log(`[ContextService] JWT expires in: ${expiresIn} seconds (${Math.floor(expiresIn / 60)} minutes)`)
+          if (expiresIn <= 0) {
+            console.error(`[ContextService] JWT token is expired!`)
+          }
+        } catch (decodeError) {
+          console.error(`[ContextService] Failed to decode JWT:`, decodeError)
+        }
+      } else {
+        console.warn(`[ContextService] No Authorization header present`)
+      }
+
+      const response = await this.client.get(
+        `/api/v1/context/secret/credential/${key}`,
+        { headers }
+      )
+      
+      console.log(`[ContextService] Context Manager response status: ${response.status}`)
+      console.log(`[ContextService] Context Manager response data:`, JSON.stringify(response.data, null, 2))
+      
+      // Handle the actual Context Manager response format: {success: true, data: {value: "..."}}
+      const credential = response.data.data || response.data.credential
+      if (credential && credential.value) {
+        console.log(`[ContextService] Successfully retrieved credential '${key}': ${credential.value.substring(0, 20)}...`)
+        return credential.value
+      } else if (response.data.value) {
+        // Handle direct value format
+        console.log(`[ContextService] Successfully retrieved credential '${key}': ${response.data.value.substring(0, 20)}...`)
+        return response.data.value
+      }
+      
+      console.log(`[ContextService] No credential value found for '${key}'`)
+      return undefined
+    } catch (error) {
+      console.error(`[ContextService] Failed to get credential ${key}:`, (error as any).response?.status, (error as any).response?.data || (error as any).message)
+      return undefined
     }
-    
-    return credential
   }
 
   private getFallbackCredentials(provider: string): ContextManagerCredentials {
