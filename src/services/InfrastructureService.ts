@@ -634,4 +634,91 @@ export class InfrastructureService {
       throw error
     }
   }
+
+  /**
+   * Get real infrastructure data from cloud provider
+   */
+  async getRealInfrastructureData(workspaceId: string, userId?: string, jwtToken?: string): Promise<{
+    droplets?: any[]
+    databases?: any[]
+    load_balancers?: any[]
+    monthly_cost?: number
+    error?: string
+  }> {
+    try {
+      // If we have user context, initialize their providers
+      if (userId && jwtToken) {
+        await this.initializeUserProviders(workspaceId, userId, jwtToken)
+        
+        // Try to get user-specific DigitalOcean provider
+        const userProviderKey = `digitalocean-${userId}` as CloudProvider
+        const userDoProvider = this.providers.get(userProviderKey)
+        
+        if (userDoProvider) {
+          console.log(`Fetching real DigitalOcean infrastructure for user ${userId}`)
+          
+          // Cast to DigitalOceanProvider to access specific methods
+          const doProvider = userDoProvider as DigitalOceanProvider
+          
+          try {
+            // Fetch real infrastructure data from DigitalOcean API
+            const [dropletsResponse, databasesResponse, loadBalancersResponse] = await Promise.allSettled([
+              doProvider.listDroplets(),
+              doProvider.listDatabases(),
+              doProvider.listLoadBalancers()
+            ])
+            
+            const droplets = dropletsResponse.status === 'fulfilled' ? dropletsResponse.value : []
+            const databases = databasesResponse.status === 'fulfilled' ? databasesResponse.value : []
+            const loadBalancers = loadBalancersResponse.status === 'fulfilled' ? loadBalancersResponse.value : []
+            
+            // Calculate actual monthly cost from resources
+            let monthlyCost = 0
+            if (droplets.length > 0) {
+              monthlyCost += droplets.reduce((sum: number, droplet: any) => {
+                const hourlyPrice = droplet.size?.price_hourly || 0
+                return sum + (hourlyPrice * 24 * 30) // Convert hourly to monthly
+              }, 0)
+            }
+            
+            console.log(`Found ${droplets.length} droplets, ${databases.length} databases, ${loadBalancers.length} load balancers`)
+            console.log(`Calculated monthly cost: $${monthlyCost.toFixed(2)}`)
+            
+            return {
+              droplets: droplets || [],
+              databases: databases || [],
+              load_balancers: loadBalancers || [],
+              monthly_cost: monthlyCost
+            }
+          } catch (error) {
+            console.error('Error fetching from DigitalOcean API:', error)
+            // Return empty data but keep the error visible
+            return {
+              droplets: [],
+              databases: [],
+              load_balancers: [],
+              monthly_cost: 0,
+              error: error instanceof Error ? error.message : 'Unknown API error'
+            }
+          }
+        }
+      }
+      
+      // Return empty if no provider or data
+      return {
+        droplets: [],
+        databases: [],
+        load_balancers: [],
+        monthly_cost: 0
+      }
+    } catch (error) {
+      console.error('Failed to fetch real infrastructure data:', error)
+      return {
+        droplets: [],
+        databases: [], 
+        load_balancers: [],
+        monthly_cost: 0
+      }
+    }
+  }
 }

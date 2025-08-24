@@ -4,6 +4,7 @@ import cors from '@fastify/cors'
 import helmet from '@fastify/helmet'
 
 import { infrastructureRoutes } from './controllers/infrastructureController'
+import { mcpRoutes } from './mcp/routes'
 
 const PORT = parseInt(process.env.PORT || '3003')
 const HOST = process.env.HOST || '0.0.0.0'
@@ -62,12 +63,18 @@ async function buildServer() {
       operations: '/api/v1/operations',
       providers: '/api/v1/providers',
       health: '/api/v1/health',
+      mcp_tools: '/api/v1/mcp/tools',
+      mcp_call: '/api/v1/mcp/call',
+      mcp_health: '/api/v1/mcp/health',
       docs: '/docs'
     }
   }))
 
   // API routes
   await fastify.register(infrastructureRoutes, { prefix: '/api/v1' })
+  
+  // MCP routes for tool primitives
+  await fastify.register(mcpRoutes, { prefix: '/api/v1' })
 
   // Global error handler
   fastify.setErrorHandler((error, request, reply) => {

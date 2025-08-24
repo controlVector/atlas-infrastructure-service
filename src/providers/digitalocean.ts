@@ -641,4 +641,45 @@ export class DigitalOceanProvider implements CloudProviderInterface {
       return []
     }
   }
+
+  /**
+   * List all droplets in the account
+   */
+  async listDroplets(): Promise<any[]> {
+    try {
+      const response = await this.client.get('/droplets')
+      return response.data.droplets || []
+    } catch (error) {
+      console.error('Failed to list DigitalOcean droplets:', error)
+      throw new ProviderError(`Failed to list droplets: ${error instanceof Error ? error.message : 'Unknown error'}`, 'digitalocean')
+    }
+  }
+
+  /**
+   * List all databases in the account
+   */
+  async listDatabases(): Promise<any[]> {
+    try {
+      const response = await this.client.get('/databases')
+      return response.data.databases || []
+    } catch (error) {
+      console.error('Failed to list DigitalOcean databases:', error)
+      // Don't throw error for databases, just return empty array
+      return []
+    }
+  }
+
+  /**
+   * List all load balancers in the account
+   */
+  async listLoadBalancers(): Promise<any[]> {
+    try {
+      const response = await this.client.get('/load_balancers')
+      return response.data.load_balancers || []
+    } catch (error) {
+      console.error('Failed to list DigitalOcean load balancers:', error)
+      // Don't throw error for load balancers, just return empty array
+      return []
+    }
+  }
 }

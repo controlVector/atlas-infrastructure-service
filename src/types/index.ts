@@ -415,6 +415,11 @@ export interface CloudProviderInterface {
   
   // Health monitoring
   checkResourceHealth(id: string): Promise<ResourceHealth>
+  
+  // Infrastructure discovery
+  listDroplets?(): Promise<any[]>
+  listDatabases?(): Promise<any[]>
+  listLoadBalancers?(): Promise<any[]>
 }
 
 // Error types
