@@ -70,6 +70,15 @@ async function buildServer() {
     }
   }))
 
+  // Health endpoint
+  fastify.get('/health', async () => ({
+    success: true,
+    service: 'atlas',
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    version: '1.0.0'
+  }))
+
   // API routes
   await fastify.register(infrastructureRoutes, { prefix: '/api/v1' })
   
