@@ -6,6 +6,7 @@
  */
 
 import { z } from 'zod'
+import { ATLAS_DROPLET_TEMPLATES, CreateDropletWithSSHSchema, RebuildDropletWithSSHSchema } from './droplet-templates'
 
 export interface MCPTool {
   name: string
@@ -22,6 +23,26 @@ export interface MCPToolResult {
 }
 
 // Tool Schemas
+// EXECUTABLE DEPLOYMENT TOOLS (Real Infrastructure Actions)
+
+export const CreateDropletSchema = z.object({
+  name: z.string().describe("Droplet name (e.g., 'riskguard-prod')"),
+  size: z.string().default('s-1vcpu-1gb').describe("Droplet size slug"),
+  region: z.string().default('nyc3').describe("Region (nyc3, sfo3, etc)"),
+  image: z.string().default('ubuntu-22-04-x64').describe("OS image slug"),
+  ssh_keys: z.array(z.string()).optional().describe("SSH key fingerprints"),
+  domain: z.string().optional().describe("Domain to configure (e.g., 'riskguard.controlvector.io')"),
+  workspace_id: z.string().describe("Workspace identifier"),
+  user_id: z.string().describe("User identifier"),
+  jwt_token: z.string().describe("JWT token for credential access")
+})
+
+export const CheckDropletStatusSchema = z.object({
+  droplet_id: z.string().describe("DigitalOcean droplet ID or name"),
+  workspace_id: z.string().describe("Workspace identifier"),
+  jwt_token: z.string().describe("JWT token for credential access")
+})
+
 export const ProvisionInfrastructureSchema = z.object({
   name: z.string().describe("Human-readable name for the infrastructure"),
   provider: z.enum(['digitalocean', 'aws', 'gcp', 'azure']).describe("Cloud provider to use"),
@@ -32,7 +53,8 @@ export const ProvisionInfrastructureSchema = z.object({
     specifications: z.record(z.any()).describe("Resource-specific configuration")
   })).describe("List of resources to provision"),
   workspace_id: z.string().describe("Workspace identifier"),
-  user_id: z.string().describe("User identifier")
+  user_id: z.string().describe("User identifier"),
+  jwt_token: z.string().optional().describe("JWT token for credential access")
 })
 
 export const GetInfrastructureOverviewSchema = z.object({
@@ -74,6 +96,27 @@ export const DestroyInfrastructureSchema = z.object({
 
 // MCP Tool Definitions
 export const ATLAS_MCP_TOOLS: MCPTool[] = [
+  // PROVEN PATTERN TOOLS - Based on successful test script patterns
+  ...ATLAS_DROPLET_TEMPLATES.map(template => ({
+    name: template.name,
+    description: template.description,
+    inputSchema: template.inputSchema
+  })),
+  
+  // EXISTING TOOLS
+  // EXECUTABLE INFRASTRUCTURE TOOLS
+  {
+    name: 'create_droplet',
+    description: 'EXECUTE: Create a new DigitalOcean droplet with specified configuration. Returns droplet ID, IP address, and status.',
+    inputSchema: CreateDropletSchema
+  },
+  {
+    name: 'check_droplet_status',
+    description: 'EXECUTE: Check the current status of a droplet (active, off, new, etc). Returns detailed status and IP information.',
+    inputSchema: CheckDropletStatusSchema
+  },
+  
+  // OVERVIEW AND PLANNING TOOLS
   {
     name: 'get_infrastructure_overview',
     description: 'Get overview of all infrastructure resources in a workspace including droplets, databases, and other cloud resources',

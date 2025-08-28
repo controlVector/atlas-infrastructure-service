@@ -169,7 +169,7 @@ export async function mcpRoutes(fastify: FastifyInstance) {
       
       // Test basic tool availability
       const availableTools = tools.tools.length
-      const expectedTools = 6 // We expect 6 MCP tools for Atlas
+      const expectedTools = 11 // We expect 11 MCP tools for Atlas (9 existing + 2 proven pattern tools)
       
       reply.send({
         status: availableTools === expectedTools ? 'healthy' : 'degraded',

@@ -428,4 +428,49 @@ export async function infrastructureRoutes(fastify: FastifyInstance) {
       })
     }
   })
+
+  // Deploy application with AI assistance
+  fastify.post('/deploy-application', async (request: AuthenticatedRequest, reply: FastifyReply) => {
+    try {
+      const body = z.object({
+        repository: z.string().url(),
+        branch: z.string().default('main'),
+        serverIP: z.string().ip(),
+        appName: z.string().min(1),
+        sshKeyPath: z.string().optional()
+      }).parse(request.body)
+
+      console.log(`[Atlas] Received deployment request: ${body.repository} -> ${body.serverIP}`)
+
+      const result = await infrastructureService.deployApplicationWithAI(body)
+
+      reply.send({
+        success: result.success,
+        deployment: {
+          repository: body.repository,
+          branch: body.branch,
+          server_ip: body.serverIP,
+          app_name: body.appName,
+          method: result.finalMethod,
+          logs: result.logs
+        },
+        timestamp: new Date().toISOString()
+      })
+    } catch (error) {
+      console.error('[Atlas] Deployment request failed:', error)
+      
+      if (error instanceof z.ZodError) {
+        reply.code(400).send({
+          error: 'Validation Error',
+          message: 'Invalid deployment request',
+          details: error.errors
+        })
+      } else {
+        reply.code(500).send({
+          error: 'Deployment Error',
+          message: error instanceof Error ? error.message : 'Unknown deployment error'
+        })
+      }
+    }
+  })
 }

@@ -15,7 +15,7 @@ export class ContextService {
   private client: AxiosInstance
   private contextManagerUrl: string
 
-  constructor(contextManagerUrl: string = 'http://localhost:3005') {
+  constructor(contextManagerUrl: string = 'http://localhost:3002') {
     this.contextManagerUrl = contextManagerUrl
     this.client = axios.create({
       baseURL: contextManagerUrl,

@@ -13,6 +13,19 @@ import {
   DigitalOceanDroplet
 } from '../types'
 
+// Import services for SSH key generation and storage
+interface HermesSSHKeyResponse {
+  key: {
+    id: string
+    name: string
+    key_type: string
+    public_key: string
+    private_key: string
+    fingerprint: string
+  }
+  success: boolean
+}
+
 export class DigitalOceanProvider implements CloudProviderInterface {
   name: CloudProvider = 'digitalocean'
   private client: AxiosInstance
@@ -127,12 +140,25 @@ export class DigitalOceanProvider implements CloudProviderInterface {
   }
 
   private async createDroplet(spec: ResourceSpec): Promise<InfrastructureResource> {
+    // Generate SSH key if not provided - this is critical for CLI success pattern
+    let sshKeyIds: number[] = []
+    if (!spec.ssh_keys || spec.ssh_keys.length === 0) {
+      console.log('[DigitalOcean] Generating SSH key for droplet deployment...')
+      const generatedSshKeyId = await this.generateAndUploadSSHKey(spec.name || `droplet-${Date.now()}`)
+      sshKeyIds = [generatedSshKeyId]
+    } else {
+      // Convert string IDs to numbers if needed
+      sshKeyIds = Array.isArray(spec.ssh_keys) 
+        ? spec.ssh_keys.map(id => typeof id === 'string' ? parseInt(id, 10) : id)
+        : []
+    }
+
     const dropletSpec = {
       name: spec.name || `droplet-${Date.now()}`,
       region: spec.region || 'nyc3',
       size: spec.size || 's-1vcpu-1gb',
       image: spec.image || 'ubuntu-22-04-x64',
-      ssh_keys: spec.ssh_keys || [],
+      ssh_keys: sshKeyIds,
       backups: spec.backups || false,
       ipv6: spec.ipv6 || false,
       monitoring: spec.monitoring || true,
@@ -163,6 +189,18 @@ export class DigitalOceanProvider implements CloudProviderInterface {
         monthly_cost: monthlyCost
       }
     } catch (error) {
+      console.error('[DigitalOcean] Droplet creation failed:', {
+        error: error,
+        dropletSpec,
+        apiToken: this.apiToken ? 'Present' : 'Missing'
+      })
+      
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status
+        const message = error.response?.data?.message || error.message
+        throw new ProviderError(`DigitalOcean API Error (${status}): ${message}`, 'digitalocean')
+      }
+      
       throw new ProviderError(`Failed to create droplet: ${error}`, 'digitalocean')
     }
   }
@@ -410,6 +448,73 @@ export class DigitalOceanProvider implements CloudProviderInterface {
       }
     } catch (error) {
       throw new ProviderError(`Failed to create VPC: ${error}`, 'digitalocean')
+    }
+  }
+
+  /**
+   * Generate SSH key via Hermes and upload to DigitalOcean
+   * Following the CLI success pattern: Generate → Upload → Store
+   */
+  private async generateAndUploadSSHKey(deploymentName: string): Promise<number> {
+    const keyName = `controlvector-${deploymentName}-${Date.now()}`
+    
+    try {
+      console.log(`[DigitalOcean] Generating SSH key via Hermes: ${keyName}`)
+      
+      // Step 1: Generate SSH key pair via Hermes service
+      const hermesUrl = process.env.HERMES_URL || 'http://localhost:3008'
+      const hermesResponse = await axios.post(`${hermesUrl}/api/v1/ssh/generate-key`, {
+        name: keyName,
+        key_type: 'ed25519',
+        purpose: 'deployment',
+        tags: [`deployment:${deploymentName}`, 'auto-generated']
+      })
+
+      if (!hermesResponse.data.success) {
+        throw new Error(`Hermes SSH key generation failed: ${hermesResponse.data.error}`)
+      }
+
+      const keyData = hermesResponse.data.key
+      console.log(`[DigitalOcean] SSH key generated: ${keyData.fingerprint}`)
+
+      // Step 2: Upload public key to DigitalOcean
+      console.log(`[DigitalOcean] Uploading public key to DigitalOcean...`)
+      const doKeyResponse = await this.client.post('/account/keys', {
+        name: keyName,
+        public_key: keyData.public_key
+      })
+
+      const doKeyId = doKeyResponse.data.ssh_key.id
+      console.log(`[DigitalOcean] SSH key uploaded, ID: ${doKeyId}`)
+
+      // Step 3: Store private key in Context Manager for future SSH access
+      // This is critical - without this step, we can't SSH to the server later
+      try {
+        console.log(`[DigitalOcean] Storing private key in Context Manager...`)
+        const contextManagerUrl = process.env.CONTEXT_MANAGER_URL || 'http://localhost:3002'
+        await axios.post(`${contextManagerUrl}/api/v1/context/secret/ssh-key`, {
+          key: `ssh-key-${keyName}`,
+          value: {
+            private_key: keyData.private_key,
+            public_key: keyData.public_key,
+            fingerprint: keyData.fingerprint,
+            key_type: keyData.key_type,
+            digitalocean_key_id: doKeyId,
+            deployment_name: deploymentName,
+            created_for: 'droplet_deployment'
+          }
+        })
+        console.log(`[DigitalOcean] Private key stored in Context Manager`)
+      } catch (contextError) {
+        console.warn(`[DigitalOcean] Warning: Failed to store private key in Context Manager:`, contextError)
+        // Don't fail the deployment for this, but log it
+      }
+
+      return doKeyId
+
+    } catch (error) {
+      console.error(`[DigitalOcean] SSH key generation/upload failed:`, error)
+      throw new ProviderError(`SSH key setup failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 'digitalocean')
     }
   }
 

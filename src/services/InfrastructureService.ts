@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid'
+import { EventEmitter } from 'events'
 import {
   Infrastructure,
   InfrastructureResource,
@@ -14,18 +15,25 @@ import {
 } from '../types'
 import { DigitalOceanProvider } from '../providers/digitalocean'
 import { ContextService } from './ContextService'
+import { AIAssistedDeployment } from './AIAssistedDeployment'
 
-export class InfrastructureService {
+export class InfrastructureService extends EventEmitter {
   private providers: Map<CloudProvider, CloudProviderInterface> = new Map()
   private contextService: ContextService
+  private aiDeployment!: AIAssistedDeployment
   
   // In-memory storage for demo (in production, this would be a database)
   private infrastructures: Map<string, Infrastructure> = new Map()
   private deploymentOperations: Map<string, DeploymentOperation> = new Map()
 
   constructor() {
+    super()
+    
     // Initialize Context Manager integration
     this.contextService = new ContextService(process.env.CONTEXT_MANAGER_URL || 'http://localhost:3005')
+    
+    // Initialize AI-assisted deployment
+    this.aiDeployment = new AIAssistedDeployment()
     
     // Initialize fallback providers for testing without user context
     this.initializeFallbackProviders()
@@ -75,9 +83,18 @@ export class InfrastructureService {
   async createInfrastructure(
     userId: string,
     workspaceId: string,
-    request: CreateInfrastructureRequest
+    request: CreateInfrastructureRequest,
+    jwtToken?: string
   ): Promise<{ infrastructure: Infrastructure; operation: DeploymentOperation }> {
-    const provider = this.providers.get(request.provider)
+    // Initialize user providers if JWT token is provided
+    if (jwtToken) {
+      await this.initializeUserProviders(workspaceId, userId, jwtToken)
+    }
+
+    // Check for user-specific provider first, then fallback to general provider
+    const userProviderKey = `${request.provider}-${userId}` as CloudProvider
+    let provider = this.providers.get(userProviderKey) || this.providers.get(request.provider)
+    
     if (!provider) {
       throw new AtlasError(`Provider ${request.provider} not configured`, 'PROVIDER_NOT_CONFIGURED')
     }
@@ -118,14 +135,33 @@ export class InfrastructureService {
     this.infrastructures.set(infrastructure.id, infrastructure)
     this.deploymentOperations.set(operation.id, operation)
 
-    // Start deployment asynchronously
-    this.deployInfrastructure(infrastructure, operation, request.resources)
-      .catch(error => {
-        console.error('Deployment failed:', error)
-        operation.status = 'failed'
-        operation.error_message = error.message
-        operation.completed_at = new Date().toISOString()
+    // Deploy infrastructure synchronously and wait for completion
+    try {
+      await this.deployInfrastructure(infrastructure, operation, request.resources)
+      
+      // Only log success if the deployment actually completed successfully
+      if (operation.status === 'completed') {
+        console.log(`Infrastructure deployment completed successfully: ${infrastructure.id}`)
+      } else {
+        console.error(`Infrastructure deployment failed: ${infrastructure.id}, status: ${operation.status}`)
+        throw new Error(`Deployment failed with status: ${operation.status}`)
+      }
+    } catch (error) {
+      console.error('Deployment failed:', error)
+      operation.status = 'failed'
+      operation.error_message = error instanceof Error ? error.message : 'Unknown error'
+      operation.completed_at = new Date().toISOString()
+      infrastructure.status = 'error'
+      
+      // Emit error event for monitoring
+      this.emit('deployment_failed', {
+        infrastructure_id: infrastructure.id,
+        operation_id: operation.id,
+        error: error instanceof Error ? error.message : 'Unknown error'
       })
+      
+      throw error // Re-throw so Victor gets the error
+    }
 
     return { infrastructure, operation }
   }
@@ -718,6 +754,60 @@ export class InfrastructureService {
         databases: [], 
         load_balancers: [],
         monthly_cost: 0
+      }
+    }
+  }
+
+  /**
+   * Deploy application to existing server with AI assistance
+   */
+  async deployApplicationWithAI(deploymentConfig: {
+    repository: string
+    branch: string
+    serverIP: string
+    appName: string
+    sshKeyPath?: string
+  }): Promise<{
+    success: boolean
+    logs: string[]
+    finalMethod?: string
+  }> {
+    console.log(`[Atlas] Starting AI-assisted deployment of ${deploymentConfig.repository}`)
+    
+    const context = {
+      repository: deploymentConfig.repository,
+      branch: deploymentConfig.branch,
+      serverIP: deploymentConfig.serverIP,
+      appName: deploymentConfig.appName,
+      sshKeyPath: deploymentConfig.sshKeyPath,
+      attempts: []
+    }
+    
+    try {
+      const result = await this.aiDeployment.deployWithAI(context)
+      
+      this.emit('deployment_completed', {
+        repository: deploymentConfig.repository,
+        server_ip: deploymentConfig.serverIP,
+        app_name: deploymentConfig.appName,
+        success: result.success,
+        method: result.finalMethod
+      })
+      
+      return result
+    } catch (error) {
+      console.error('[Atlas] AI-assisted deployment failed:', error)
+      
+      this.emit('deployment_failed', {
+        repository: deploymentConfig.repository,
+        server_ip: deploymentConfig.serverIP,
+        app_name: deploymentConfig.appName,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      })
+      
+      return {
+        success: false,
+        logs: [`Error: ${error instanceof Error ? error.message : 'Unknown error'}`]
       }
     }
   }
